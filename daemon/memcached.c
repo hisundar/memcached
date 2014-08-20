@@ -7055,18 +7055,46 @@ static void sigterm_handler(int sig) {
     cb_assert(sig == SIGTERM || sig == SIGINT);
     memcached_shutdown = 1;
 }
+
+static void sigcrash_handler(int sig) {
+    settings.extensions.logger->log(EXTENSION_LOG_WARNING, NULL,
+            "Signal %d caught.. dumping backtraces...\n", sig);
+    if (sig != SIGUSR1) {
+        struct sigaction sa;
+        memset(&sa, 0, sizeof(sa));
+        sa.sa_handler = SIG_DFL;
+
+        settings.extensions.logger->log(EXTENSION_LOG_WARNING, NULL,
+                "Generating core...\n");
+        // restore old signal handler so a core dump is generated
+        sigemptyset(&sa.sa_mask);
+        sigaction(sig, &sa, 0);
+        raise(sig);
+    }
+}
 #endif
 
-static int install_sigterm_handler(void) {
+static int install_signal_handlers(void) {
 #ifndef WIN32
     struct sigaction sa;
     memset(&sa, 0, sizeof(sa));
     sa.sa_handler = sigterm_handler;
 
-    if (sigemptyset(&sa.sa_mask) == -1 || sigaction(SIGTERM, &sa, 0) == -1 ||
-        sigaction(SIGINT, &sa, 0) == -1) {
+    if (sigemptyset(&sa.sa_mask) == -1 ||
+        sigaction(SIGTERM, &sa, NULL) == -1 ||
+        sigaction(SIGINT, &sa, NULL) == -1) {
         return -1;
     }
+
+    memset(&sa, 0, sizeof(sa));
+    sa.sa_handler = sigcrash_handler;
+    if (sigemptyset(&sa.sa_mask) == -1 ||
+        sigaction(SIGSEGV, &sa, NULL) == -1 ||
+        sigaction(SIGABRT, &sa, NULL) == -1 ||
+        sigaction(SIGUSR1, &sa, NULL)) {
+        return -1;
+    }
+
 #endif
 
     return 0;
@@ -7983,9 +8011,9 @@ int main (int argc, char **argv) {
         settings.reqs_per_tap_event = DEFAULT_REQS_PER_TAP_EVENT;
     }
 
-    if (install_sigterm_handler() != 0) {
+    if (install_signal_handlers() != 0) {
         settings.extensions.logger->log(EXTENSION_LOG_WARNING, NULL,
-                                        "Failed to install SIGTERM handler\n");
+                                        "Failed to install signal handlers\n");
         exit(EXIT_FAILURE);
     }
 
